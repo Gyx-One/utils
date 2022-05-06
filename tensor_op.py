@@ -1,4 +1,21 @@
+import functools
 from .dependencies import *
+
+# basic type conversion
+def totensor(array_list):
+    return map(lambda x: torch.FloatTensor(x),array_list)
+
+def tonumpy(tensor_list):
+    return map(lambda x: x.cpu().numpy(),tensor_list)
+
+def tocuda(tensor_list):
+    return map(lambda x: x.cuda(),tensor_list)
+
+def tocuda_dict(tensor_dict):
+    for name in tensor_dict.keys():
+        if(hasattr(tensor_dict[name],"cuda")):
+            tensor_dict[name] = tensor_dict[name].cuda()
+    return tensor_dict
 
 def get_full_kernel3():
     return torch.ones(size=[1,1,3,3,3])
@@ -83,6 +100,13 @@ def get_mask_bbx4D_tensor(bin_mask,pad_h=5,pad_w=5,pad_l=5):
         mask[:,min_h:max_h,min_w:max_w,min_l:max_l]=1
     return mask
 
+def get_mask_bbx4D_tensor_batch(bin_mask_batch, pad_h=5, pad_w=5, pad_l=5):
+    batch_size = bin_mask_batch.shape[0]
+    bbx_mask_list = []
+    for batch_idx in range(0, batch_size):
+        bbx_mask_list.append(get_mask_bbx4D_tensor(bin_mask_batch[batch_idx], pad_h=pad_h, pad_w=pad_w, pad_l=pad_l))
+    return torch.stack(bbx_mask_list)
+
 def get_boundry_bbx4D_tensor(bbx_mask):
     """
     get the boundry of the given bbx_mask
@@ -103,6 +127,13 @@ def get_boundry_bbx4D_tensor(bbx_mask):
     min_w,max_w=torch.min(ws),torch.max(ws)
     min_l,max_l=torch.min(ls),torch.max(ls)
     return min_h,max_h,min_w,max_w,min_l,max_l
+
+def cal_dice_tensor(gt_label,pd_label):
+    cal_gt_label=torch.where(gt_label!=0,1,0)
+    cal_pd_label=torch.where(pd_label!=0,1,0)
+    intersec = cal_gt_label*cal_pd_label
+    dice=2*torch.sum(intersec)/torch.clamp(torch.sum(cal_gt_label)+torch.sum(cal_pd_label), min=1e-5)
+    return dice
 
 def get_local_patch(x,mask,patch_h=64,patch_w=64,patch_l=64):
     #get local patch of the binary mask
@@ -137,6 +168,11 @@ def to_tensor_list(number_list):
     tensor_list = [torch.FloatTensor([number]) for number in number_list]
     return tensor_list
 
+def totensor_dict(tensor_dict):
+    for key in tensor_dict.keys():
+        tensor_dict[key] = torch.FloatTensor([tensor_dict[key]])
+    return tensor_dict
+
 def get_grid_tensor(shape):
     '''
     Parameters:
@@ -150,7 +186,25 @@ def get_grid_tensor(shape):
     grid = grid.float()
     return grid
 
-def get_rigid_matrix_from_param(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=0,center_y=0,center_z=0):
+@functools.lru_cache(maxsize=8)
+def get_grid_tensor_by_param(h, w, l):
+    return get_grid_tensor(shape=[h, w, l])    
+
+def get_inv_rigid_matrix(init_rigid_matrix):
+    if(not isinstance(init_rigid_matrix, torch.FloatTensor)):
+        rigid_matrix = torch.FloatTensor(init_rigid_matrix)
+    else:
+        rigid_matrix = init_rigid_matrix
+    inv_rigid_matrix = torch.zeros_like(rigid_matrix).to(rigid_matrix.device)
+    rotate_matrix = rigid_matrix[:3,:3]
+    trans_vec = rigid_matrix[:3, 3]
+    inv_rigid_matrix[:3, :3] = rotate_matrix.transpose(0,1)
+    inv_rigid_matrix[:3, 3] = -(rotate_matrix.transpose(0,1))@trans_vec
+    inv_rigid_matrix[3, 3] = 1
+    return inv_rigid_matrix
+    
+
+def get_rigid_matrix_from_param(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=63.5,center_y=63.5,center_z=63.5,debug=False):
     '''
     Parameters:
         trans_x: shape [1]
@@ -164,6 +218,7 @@ def get_rigid_matrix_from_param(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=
     '''
     # input trans_x,trans_y,trans_z,roll,pitch,yaw
     # output rigid matrix of shape [4,4]
+
     if(not is_tensor(trans_x)):
         trans_x,trans_y,trans_z,roll,pitch,yaw = to_tensor_list([trans_x,trans_y,trans_z,roll,pitch,yaw])
     from torch import cos,sin
@@ -228,9 +283,179 @@ def get_rigid_matrix_from_param(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=
         
     # total
     R = Rt@Rdc@Rr@Rc
+    #print(f"test Rr:\n{Rr}\nR:\n{R}")
+    
+    if(debug):
+        print(f"[Debug] get_rigid_matrix_from_param: ")
+        print(f"trans_x:{trans_x} trans_y:{trans_y} trans_z:{trans_z} roll:{roll} pitch:{pitch} yaw:{yaw} center_x:{center_x} center_y:{center_y} center_z:{center_z}\n")
+        print(f"result matrix:\n{R}\n")
     return R
 
-def get_rigid_matrix_from_param_batch(trans_x,trans_y,trans_z,roll,pitch,yaw):
+def get_inv_rigid_matrix_from_param(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=63.5,center_y=63.5,center_z=63.5):
+    '''
+    Parameters:
+        trans_x: shape [1]
+        trans_y: shape [1]
+        trans_z: shape [1]
+        roll: shape [1]
+        pitch: shape [1]
+        yaw: shape [1]
+    Returns:
+        rigid_matrix: shape [4,4], rigid transformation matrix in homogeneous form
+    '''
+    # input trans_x,trans_y,trans_z,roll,pitch,yaw
+    # output rigid matrix of shape [4,4]
+    print(f"test get_rigid_matrix trans_x:{trans_x} trans_y:{trans_y} trans_z:{trans_z} roll:{roll} pitch:{pitch} yaw:{yaw} center_x:{center_x} center_y:{center_y} center_z:{center_z}")
+    if(not is_tensor(trans_x)):
+        trans_x,trans_y,trans_z,roll,pitch,yaw = to_tensor_list([trans_x,trans_y,trans_z,roll,pitch,yaw])
+    from torch import cos,sin
+    device = trans_x.device
+    # center
+    Rc = torch.zeros(size=[4,4]).to(device)
+    Rc[0,0] = 1
+    Rc[1,1] = 1
+    Rc[2,2] = 1
+    Rc[0,3] = -center_x
+    Rc[1,3] = -center_y
+    Rc[2,3] = -center_z
+    Rc[3,3] = 1
+    
+    # rotation
+    # Rx
+    Rx=torch.zeros(size=[4,4]).to(device)
+    Rx[0,0]=1
+    Rx[1,1]=cos(roll)
+    Rx[1,2]=sin(roll)
+    Rx[2,1]=-sin(roll)
+    Rx[2,2]=cos(roll)
+    Rx[3,3]=1
+    # Ry
+    Ry=torch.zeros(size=[4,4]).to(device)
+    Ry[0,0]=cos(pitch)
+    Ry[0,2]=-sin(pitch)
+    Ry[1,1]=1
+    Ry[2,0]=sin(pitch)
+    Ry[2,2]=cos(pitch)
+    Ry[3,3]=1
+    # Rz
+    Rz=torch.zeros(size=[4,4]).to(device)
+    Rz[0,0]=cos(yaw)
+    Rz[0,1]=sin(yaw)
+    Rz[1,0]=-sin(yaw)
+    Rz[1,1]=cos(yaw)
+    Rz[2,2]=1
+    Rz[3,3]=1
+    # combine
+    Rr = Rx@Ry@Rz
+    inv_Rr = Rz@Ry@Rx
+    
+    # transformation
+    Rt = torch.zeros(size=[4,4]).to(device)
+    Rt[0,0] = 1
+    Rt[1,1] = 1
+    Rt[2,2] = 1
+    Rt[0,3] = trans_x
+    Rt[1,3] = trans_y
+    Rt[2,3] = trans_z
+    Rt[3,3] = 1
+
+    # de-center
+    Rdc = torch.zeros(size=[4,4]).to(device)
+    Rdc[0,0] = 1
+    Rdc[1,1] = 1
+    Rdc[2,2] = 1
+    Rdc[0,3] = center_x
+    Rdc[1,3] = center_y
+    Rdc[2,3] = center_z
+    Rdc[3,3] = 1
+        
+    # total
+    R = Rt@Rdc@Rr@Rc
+    inv_R = Rc@inv_Rr@Rdc@(-Rt)
+    print(f"test R@inv_R:{R@inv_R}")
+    return inv_R
+
+def get_rigid_matrix_from_param_ZYX(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=63.5,center_y=63.5,center_z=63.5):
+    '''
+    Parameters:
+        trans_x: shape [1]
+        trans_y: shape [1]
+        trans_z: shape [1]
+        roll: shape [1]
+        pitch: shape [1]
+        yaw: shape [1]
+    Returns:
+        rigid_matrix: shape [4,4], rigid transformation matrix in homogeneous form
+    '''
+    # input trans_x,trans_y,trans_z,roll,pitch,yaw
+    # output rigid matrix of shape [4,4]
+    if(not is_tensor(trans_x)):
+        trans_x,trans_y,trans_z,roll,pitch,yaw = to_tensor_list([trans_x,trans_y,trans_z,roll,pitch,yaw])
+    from torch import cos,sin
+    device = trans_x.device
+    # center
+    Rc = torch.zeros(size=[4,4]).to(device)
+    Rc[0,0] = 1
+    Rc[1,1] = 1
+    Rc[2,2] = 1
+    Rc[0,3] = -center_x
+    Rc[1,3] = -center_y
+    Rc[2,3] = -center_z
+    Rc[3,3] = 1
+    
+    # rotation
+    # Rx
+    Rx=torch.zeros(size=[4,4]).to(device)
+    Rx[0,0]=1
+    Rx[1,1]=cos(roll)
+    Rx[1,2]=sin(roll)
+    Rx[2,1]=-sin(roll)
+    Rx[2,2]=cos(roll)
+    Rx[3,3]=1
+    # Ry
+    Ry=torch.zeros(size=[4,4]).to(device)
+    Ry[0,0]=cos(pitch)
+    Ry[0,2]=-sin(pitch)
+    Ry[1,1]=1
+    Ry[2,0]=sin(pitch)
+    Ry[2,2]=cos(pitch)
+    Ry[3,3]=1
+    # Rz
+    Rz=torch.zeros(size=[4,4]).to(device)
+    Rz[0,0]=cos(yaw)
+    Rz[0,1]=sin(yaw)
+    Rz[1,0]=-sin(yaw)
+    Rz[1,1]=cos(yaw)
+    Rz[2,2]=1
+    Rz[3,3]=1
+    # combine
+    Rr = Rz@Ry@Rx
+    
+    # transformation
+    Rt = torch.zeros(size=[4,4]).to(device)
+    Rt[0,0] = 1
+    Rt[1,1] = 1
+    Rt[2,2] = 1
+    Rt[0,3] = trans_x
+    Rt[1,3] = trans_y
+    Rt[2,3] = trans_z
+    Rt[3,3] = 1
+
+    # de-center
+    Rdc = torch.zeros(size=[4,4]).to(device)
+    Rdc[0,0] = 1
+    Rdc[1,1] = 1
+    Rdc[2,2] = 1
+    Rdc[0,3] = center_x
+    Rdc[1,3] = center_y
+    Rdc[2,3] = center_z
+    Rdc[3,3] = 1
+        
+    # total
+    R = Rt@Rdc@Rr@Rc
+    return R
+
+def get_rigid_matrix_from_param_batch(trans_x,trans_y,trans_z,roll,pitch,yaw, center_x=63.5, center_y=63.5, center_z=63.5):
     '''
     Parameters:
         trans_x: shape [n,1]
@@ -246,7 +471,7 @@ def get_rigid_matrix_from_param_batch(trans_x,trans_y,trans_z,roll,pitch,yaw):
     rigid_matrix = torch.zeros(size=[batch_size,4,4]).to(trans_x.device)
     for batch_idx in range(0,batch_size):
         rigid_matrix[batch_idx,:,:]=get_rigid_matrix_from_param(trans_x[batch_idx], trans_y[batch_idx], trans_z[batch_idx],\
-            roll[batch_idx], pitch[batch_idx], yaw[batch_idx])
+            roll[batch_idx], pitch[batch_idx], yaw[batch_idx], center_x=center_x, center_y=center_y, center_z=center_z)
     return rigid_matrix
 
 def get_deform_from_rigid_matrix(rigid_matrix,shape):
@@ -290,7 +515,7 @@ def get_deform_from_rigid_matrix_batch(rigid_matrix, shape):
         deform[batch_idx] = get_deform_from_rigid_matrix(rigid_matrix[batch_idx], shape)
     return deform
 
-def spatial_transform(image, deform, mode="bilinear"):
+def spatial_transform(image, deform, mode="bilinear", padding_mode="zeros"):
     '''
     Parameters:
         image: shape [n,c,h,w,l], image to be transform
@@ -301,9 +526,9 @@ def spatial_transform(image, deform, mode="bilinear"):
     image = torch.unsqueeze(image, dim=0)
     deform = torch.unsqueeze(deform, dim=0)
     shape = image.shape[2:]
-    return spatial_transform_batch(image, deform, mode=mode)[0]
+    return spatial_transform_batch(image, deform, mode=mode, padding_mode=padding_mode)[0]
 
-def spatial_transform_batch(image, deform, mode="bilinear"):
+def spatial_transform_batch(image, deform, mode="bilinear", padding_mode="zeros"):
     '''
     Parameters:
         image: shape [n,c,h,w,l], image to be transform
@@ -322,5 +547,58 @@ def spatial_transform_batch(image, deform, mode="bilinear"):
     # also not sure why, but the channels need to be reversed
     new_locs = new_locs.permute(0, 2, 3, 4, 1)
     new_locs = new_locs[..., [2, 1, 0]]
-    return nnf.grid_sample(image, new_locs, align_corners=True, mode=mode)
-    
+    return nnf.grid_sample(image, new_locs, align_corners=True, mode=mode, padding_mode=padding_mode)
+
+def get_points_from_seg(seg):
+    """
+    Convert a input binary segment to a points in it.
+
+    Parameters:
+        seg (tensor): shape [1, H, W, L], voxels with value!=0 are valid.
+    Returns:
+        points_batch (tensor): shape [M, 3], M is the number of points.
+    """
+    _, h, w, l = seg.shape
+    select_seg = seg>0.1
+    grid_tensor = get_grid_tensor_by_param(h=h, w=w, l=l)
+    grid_hs = grid_tensor[0:1, :, :, :]
+    grid_ws = grid_tensor[1:2, :, :, :]
+    grid_ls = grid_tensor[2:3, :, :, :]
+    points_hs = grid_hs[select_seg]
+    points_ws = grid_ws[select_seg]
+    points_ls = grid_ls[select_seg]
+    points = torch.stack([points_hs, points_ws, points_ls]).transpose(0,1)
+    return points
+        
+def get_points_from_seg_batch(seg_batch):
+    """
+    Convert a input binary segment to a points in it.
+
+    Parameters:
+        seg_batch (tensor): shape [N, 1, H, W, L], voxels with value!=0 are valid.
+    Returns:
+        points_batch (list): a list with points tensor as list item. Each points tensor is of shape [M, 3], M is the number of points.
+    """
+    points_batch = []
+    batch_size = seg_batch.shape[0]
+    for batch_idx in range(0, batch_size):
+        points = get_points_from_seg(seg_batch[batch_idx])
+        points_batch.append(points)
+    return points_batch
+
+def statistic_model_param(model):
+    Total_params = 0
+    Trainable_params = 0
+    NonTrainable_params = 0
+
+    for param in model.parameters():
+        mulValue = np.prod(param.size())
+        Total_params += mulValue
+        if param.requires_grad:
+            Trainable_params += mulValue
+        else:
+            NonTrainable_params += mulValue
+
+    print(f'Total params: {Total_params}')
+    print(f'Trainable params: {Trainable_params}')
+    print(f'Non-trainable params: {NonTrainable_params}')

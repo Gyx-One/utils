@@ -3,6 +3,7 @@ from .common import *
 from .image_io import *
 from .volume_op import *
 
+# plastimatch registration
 def plasimatch_apply_trans(input_image_path,
                            input_trans_path,
                            output_image_path,
@@ -24,13 +25,14 @@ def plasimatch_apply_trans(input_image_path,
 
 def plastimatch_regis_rigid(fix_image_path, 
                             mov_image_path,
-                            output_image_path,
+                            output_image_path=None,
                             output_trans_path=None,
                             fix_mask_path=None,
                             mov_mask_path=None,
                             mov_seg_path=None,
                             output_seg_path=None,
                             max_its=300,
+                            metric="mse",
                             default_value=0,
                             transfer_input_image_paths=[],
                             transfer_output_image_paths=[],
@@ -63,6 +65,8 @@ def plastimatch_regis_rigid(fix_image_path,
     # paths
     os.makedirs(temp_dir,exist_ok=True)
     cmd_file_path = f"{temp_dir}/cmd_file.txt"
+    if(output_image_path is None):
+        output_image_path = f"{temp_dir}/output_image.nii.gz"
     if(output_trans_path is None):
         output_trans_path = f"{temp_dir}/output_trans.txt"
     make_parent_dir(output_image_path)
@@ -82,9 +86,11 @@ def plastimatch_regis_rigid(fix_image_path,
     regis_file.write("\n")
     # stage
     regis_file.write("[STAGE]\n")
+    regis_file.write("impl=itk\n")
     regis_file.write("xform=rigid\n")
     regis_file.write("optim=versor\n")
     regis_file.write(f"max_its={max_its}\n")
+    regis_file.write(f"metric={metric}\n")
     regis_file.write("res=1 1 1\n")
     regis_file.write(f"default_value={default_value}\n")
     regis_file.close()
@@ -97,19 +103,35 @@ def plastimatch_regis_rigid(fix_image_path,
         write_mha_array3D(mov_seg, mov_seg_path)
         make_parent_dir(output_seg_path)
         os.system(f"plastimatch warp --input {mov_seg_path} --output-img {output_seg_path} --xf {output_trans_path} --interpolation nn")
-
+    
+    # transfer input images
+    assert len(transfer_input_image_paths)==len(transfer_output_image_paths)
+    if(len(transfer_interpolation_methods)==0):
+        transfer_interpolation_methods = ["nn"]*len(transfer_input_image_paths)
+    for transfer_input_image_path, transfer_output_image_path, transfer_interpolation_method in \
+        zip(transfer_input_image_paths, transfer_output_image_paths, transfer_interpolation_methods):
+        plasimatch_apply_trans(
+            transfer_input_image_path,
+            output_trans_path,
+            transfer_output_image_path,
+            transfer_interpolation_method
+        )
+    
     if(remove_temp_dir):
         os.system(f"rm -r {temp_dir}")
 
 def plastimatch_regis_affine(fix_image_path, 
                              mov_image_path,
-                             output_image_path,
+                             output_image_path=None,
                              output_trans_path=None,
                              fix_mask_path=None,
                              mov_mask_path=None,
                              mov_seg_path=None,
                              output_seg_path=None,
+                             metric="mse",
                              max_its=300,
+                             grad_tol=1e-3,
+                             res_list=[1,1,1],
                              default_value=0,
                              transfer_input_image_paths=[],
                              transfer_output_image_paths=[],
@@ -142,6 +164,8 @@ def plastimatch_regis_affine(fix_image_path,
     # paths
     os.makedirs(temp_dir,exist_ok=True)
     cmd_file_path = f"{temp_dir}/cmd_file.txt"
+    if(output_image_path is None):
+        output_image_path = f"{temp_dir}/output_image.nii.gz"
     if(output_trans_path is None):
         output_trans_path = f"{temp_dir}/output_trans.txt"
     make_parent_dir(output_image_path)
@@ -157,17 +181,21 @@ def plastimatch_regis_affine(fix_image_path,
     if(mov_mask_path is not None):
         regis_file.write(f"moving_mask={mov_mask_path}\n")
     regis_file.write(f"img_out={output_image_path}\n")
-    regis_file.write(f"xform_out={output_trans_path}\n")
     regis_file.write("\n")
     # stage
     regis_file.write("[STAGE]\n")
-    regis_file.write("xform=affine\n")
     regis_file.write("impl=itk\n")
-    regis_file.write("optim=rsg\n")
+    regis_file.write("xform=affine\n")
+    regis_file.write(f"xform_out={output_trans_path}\n")
+    regis_file.write(f"optim=rsg\n")
+    regis_file.write(f"metric={metric}\n")
+    regis_file.write(f"rsg_grad_tol={grad_tol}\n")
     regis_file.write(f"max_its={max_its}\n")
-    regis_file.write("res=1 1 1\n")
+    regis_file.write(f"res={res_list[0]} {res_list[1]} {res_list[2]}\n")
     regis_file.close()
     os.system(f"plastimatch register {cmd_file_path}")
+    # TODO:
+    # affine registeration not work and produce trans with 1,0,0,0,1,0,0,0,1,0,0,0
     
     # affine segment transformation
     if(mov_seg_path is not None and output_seg_path is not None):
@@ -176,6 +204,19 @@ def plastimatch_regis_affine(fix_image_path,
         write_mha_array3D(mov_seg, mov_seg_path)
         make_parent_dir(output_seg_path)
         os.system(f"plastimatch warp --input {mov_seg_path} --output-img {output_seg_path} --xf {output_trans_path} --interpolation nn")
+
+    # transfer input images
+    assert len(transfer_input_image_paths)==len(transfer_output_image_paths)
+    if(len(transfer_interpolation_methods)==0):
+        transfer_interpolation_methods = ["nn"]*len(transfer_input_image_paths)
+    for transfer_input_image_path, transfer_output_image_path, transfer_interpolation_method in \
+        zip(transfer_input_image_paths, transfer_output_image_paths, transfer_interpolation_methods):
+        plasimatch_apply_trans(
+            transfer_input_image_path,
+            output_trans_path,
+            transfer_output_image_path,
+            transfer_interpolation_method
+        )
 
     if(remove_temp_dir):
         os.system(f"rm -r {temp_dir}")
@@ -189,6 +230,7 @@ def plastimatch_regis_demon(fix_image_path,
                             mov_seg_path=None,
                             output_seg_path=None,
                             default_value=0,
+                            max_its=300,
                             transfer_input_image_paths=[],
                             transfer_output_image_paths=[],
                             transfer_interpolation_methods=[],
@@ -230,8 +272,10 @@ def plastimatch_regis_demon(fix_image_path,
     regis_file.write("[GLOBAL]\n")
     regis_file.write(f"fixed={fix_image_path}\n")
     regis_file.write(f"moving={mov_image_path}\n")
-    regis_file.write(f"fixed_mask={fix_mask_path}\n")
-    regis_file.write(f"moving_mask={mov_mask_path}\n")
+    if(fix_mask_path is not None):
+        regis_file.write(f"fixed_mask={fix_mask_path}\n")
+    if(mov_mask_path is not None):
+        regis_file.write(f"moving_mask={mov_mask_path}\n")
     regis_file.write(f"img_out={output_image_path}\n")
     regis_file.write(f"xform_out={output_trans_path}\n")
     regis_file.write("\n")
@@ -243,7 +287,7 @@ def plastimatch_regis_demon(fix_image_path,
     regis_file.write("optim_subtype=diffeomorphic\n")
     regis_file.write("demons_gradient_type=symmetric\n")
     regis_file.write("demons_step_length=1\n")
-    regis_file.write("max_its=300\n")
+    regis_file.write(f"max_its={max_its}\n")
     regis_file.write("res=1 1 1\n")
     regis_file.close()
     os.system(f"plastimatch register {cmd_file_path}")
@@ -255,6 +299,19 @@ def plastimatch_regis_demon(fix_image_path,
         write_mha_array3D(mov_seg, mov_seg_path)
         make_parent_dir(output_seg_path)
         os.system(f"plastimatch warp --input {mov_seg_path} --output-img {output_seg_path} --xf {output_trans_path} --interpolation nn")
+
+    # transfer input images
+    assert len(transfer_input_image_paths)==len(transfer_output_image_paths)
+    if(len(transfer_interpolation_methods)==0):
+        transfer_interpolation_methods = ["nn"]*len(transfer_input_image_paths)
+    for transfer_input_image_path, transfer_output_image_path, transfer_interpolation_method in \
+        zip(transfer_input_image_paths, transfer_output_image_paths, transfer_interpolation_methods):
+        plasimatch_apply_trans(
+            transfer_input_image_path,
+            output_trans_path,
+            transfer_output_image_path,
+            transfer_interpolation_method
+        )
 
     if(remove_temp_dir):
         os.system(f"rm -r {temp_dir}")
@@ -350,4 +407,51 @@ def plastimatch_label_transfer(template_image_path,
     
     if(remove_temp_dir):
         os.system(f"rm -rf {os.path.abspath(temp_dir)}")
-    
+
+# sitk registration
+def sitk_regis_rigid_get_transform(fix_image_path, mov_image_path, output_image_path=None, max_its=300):
+    fix_cube = read_mha_array3D(fix_image_path)
+    mov_cube = read_mha_array3D(mov_image_path)
+    fix_image = itk.GetImageFromArray(fix_cube)
+    mov_image = itk.GetImageFromArray(mov_cube)
+    init_transform = itk.CenteredTransformInitializer(fix_image, mov_image, itk.Euler3DTransform(), itk.CenteredTransformInitializerFilter.GEOMETRY)
+    regis=itk.ImageRegistrationMethod()
+    regis.SetMetricAsMeanSquares()
+    regis.SetInterpolator(itk.sitkNearestNeighbor)
+    regis.SetOptimizerAsRegularStepGradientDescent(learningRate=1.0,minStep=1e-2,numberOfIterations=max_its)
+    regis.SetOptimizerScalesFromPhysicalShift()
+    regis.SetInitialTransform(init_transform)
+    transform=regis.Execute(fixed=fix_image,moving=mov_image)
+    trans_image=itk.Resample(mov_image,fix_image,transform,itk.sitkNearestNeighbor,0,mov_image.GetPixelID())
+    if(output_image_path is not None):
+        itk.WriteImage(trans_image, output_image_path)
+    return transform
+
+def ants_regis_syn(fix_image_path, 
+                    mov_image_path,
+                    output_image_path,
+                    fix_mask_path=None,
+                    mov_mask_path=None,
+                    output_seg_path=None,
+                    default_value=0,
+                    max_its=300,
+                    transfer_input_image_paths=[],
+                    transfer_output_image_paths=[],
+                    transfer_interpolation_methods=[]
+                    ):
+    import ants
+    fix_image = ants.image_read(fix_image_path)
+    mov_image = ants.image_read(mov_image_path)
+    ret_trans = ants.registration(fixed=fix_image, moving=mov_image, type_of_transform="SyNRA")
+    fwd_trans = ret_trans["fwdtransforms"]
+    # image
+    output_image = ants.apply_transforms(fixed=fix_image, moving=mov_image, transformlist=fwd_trans)
+    ants.image_write(output_image, output_image_path)
+    for transfer_idx in range(0, len(transfer_input_image_paths)):
+        transfer_input_image_path = transfer_input_image_paths[transfer_idx]
+        transfer_output_image_path = transfer_output_image_paths[transfer_idx]
+        transfer_interpolation_method = transfer_interpolation_methods[transfer_idx]
+        transfer_input_image = ants.image_read(transfer_input_image_path)
+        transfer_output_image = ants.apply_transforms(fixed=fix_image, moving=transfer_input_image, transformlist=fwd_trans,\
+            interpolator=transfer_interpolation_method)
+        ants.image_write(transfer_output_image, transfer_output_image_path)
