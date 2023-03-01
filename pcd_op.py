@@ -2,7 +2,7 @@ import copy
 import torch
 import numpy as np
 import open3d as o3d
-from .common import get_param_from_rigid_matrix
+from .geom_op import get_param_from_rigid_matrix
 
 # pcd io ops
 def read_point_cloud(pcd_path):
