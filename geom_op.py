@@ -1,3 +1,6 @@
+"""
+本文件包含的是几何有关的函数geometric functions
+"""
 from .dependencies import *
 from scipy.spatial.transform import Rotation
 

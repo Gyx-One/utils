@@ -13,3 +13,4 @@ import numpy as np
 import SimpleITK as itk
 from torch.utils.data import Dataset
 import torch.nn.functional as F
+import matplotlib.pyplot as plt

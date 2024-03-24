@@ -1,7 +1,11 @@
+"""
+本文件包括的是和点云有关函数 point cloud functions
+"""
 import copy
 import torch
 import numpy as np
 import open3d as o3d
+from .common import make_parent_dir
 from .geom_op import get_param_from_rigid_matrix
 
 # pcd io ops
@@ -9,6 +13,7 @@ def read_point_cloud(pcd_path):
     return o3d.io.read_point_cloud(pcd_path)
 
 def write_point_cloud(pcd, pcd_path):
+    make_parent_dir(pcd_path)
     return o3d.io.write_point_cloud(pcd_path, pcd)
 
 # pcd gen ops
@@ -17,6 +22,40 @@ def get_pcd_from_mesh(mesh, compute_normal=True):
     if(compute_normal):
         pcd.estimate_normals()
     return pcd
+
+def get_pcd_from_pts(pts, compute_normal=True):
+    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
+    if(compute_normal):
+        pcd.estimate_normals()
+    return pcd
+
+# pcd points access ops
+def get_pcd_vertices(pcd_o3d):
+    return np.array(pcd_o3d.points) 
+
+def set_pcd_vertices(pcd_o3d, vertices, compute_norm=True):
+    pcd_o3d.points = o3d.utility.Vector3dVector(vertices)
+    if(compute_norm):
+        pcd_o3d.estimate_normals()
+    return pcd_o3d
+
+# pcd warp by itksnap-format bspline grid func
+def itk_warp_pcd_func(pcd_o3d, itk_transform):
+    process_itk_transform = copy.copy(itk_transform)
+    process_itk_transform.SetInverse()
+
+    process_pcd = copy.copy(pcd_o3d)
+    trans_pcd = copy.copy(pcd_o3d)
+    pcd_vertices = get_pcd_vertices(process_pcd)
+
+    trans_pcd_vertices_list = []
+    for v_idx in range(0, pcd_vertices.shape[0]):
+        pcd_vertice = list(pcd_vertices[v_idx])
+        trans_pcd_vertice = process_itk_transform.TransformPoint(pcd_vertice)
+        trans_pcd_vertices_list.append(trans_pcd_vertice)
+    trans_pcd = set_pcd_vertices(trans_pcd, np.array(trans_pcd_vertices_list))
+    trans_pcd.estimate_normals()
+    return trans_pcd
 
 # pcd registration ops
 def icp_pcd_registration(src_pcd,
@@ -62,3 +101,9 @@ def icp_pcd_registration(src_pcd,
         return regis_pcd, regis_matrix
     else:
         return regis_pcd
+
+
+def get_point_dist_matrix_arrayND(point_array):
+    # point array shape: [N, M], N is the number of points, M is the dimension of point space
+    dist_matrix = np.sqrt(np.sum(np.square(point_array[:, np.newaxis, :] - point_array[np.newaxis, :, :]),  axis=2))
+    return dist_matrix

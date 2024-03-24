@@ -1,16 +1,16 @@
-import math
-import shutil
-from .common import get_name, get_suffix, make_parent_dir, make_parent_dir_list, round_int
+from dependencies import *
+from .common import *
 from .tensor_op import get_inv_rigid_matrix
-from .dependencies import *
-import cc3d
+from .image_op import cvt_image_gray_to_color
+from .image_op import Tsne_embed, write_image_float_gray
 from scipy.ndimage.interpolation import map_coordinates
 from scipy.ndimage.filters import gaussian_filter
 from scipy.ndimage.morphology import binary_dilation, binary_erosion
+from collections import Counter
 from skimage import measure
+import cc3d
 
 # volume io operations
-
 # read and write image
 def read_mha_image3D(image_path):
     return itk.ReadImage(image_path)
@@ -112,8 +112,11 @@ def write_mha_tensor4D(tensor,image_path,norm=False, squeeze=True):
     make_parent_dir(image_path)
     write_mha_array4D(array,image_path,norm)
 
-# volumne generation
+# array exam function
+def exam_array(array, name="default"):
+    print(f"array {name}: type:{type(array)} shape:{array.shape} dtype:{array.dtype} max:{np.max(array)} min:{np.min(array)} mean:{np.mean(array)} sum:{np.sum(array)}")
 
+# volumne generation
 # connected-component operations
 def get_component_3D(cube,keep_num=1,connectivity=2,only_cube=False):
     cube=cube.astype(np.int32)
@@ -279,8 +282,8 @@ def detect_bottom_array3D(cube,thresh=0.01):
 
 # bounding box operations
 def get_mask_bbx3D_array(label_cube,margin=4):
-    #get bounding box of the binary mask
-    #input [h,w,l] tensor
+    # get bounding box of the binary mask
+    # input [h,w,l] tensor
     mask=np.zeros_like(label_cube)
     if(np.sum(label_cube)!=0):
         img_h,img_w,img_l=label_cube.shape
@@ -294,6 +297,22 @@ def get_mask_bbx3D_array(label_cube,margin=4):
         mask[mask_hmin:mask_hmax+1,mask_wmin:mask_wmax+1, mask_lmin:mask_lmax+1]=1
     mask=mask.astype(np.float32)
     return mask
+
+def get_mask_bbx_array2D(label_slice, margin=4):
+    # get bounding box of the binary mask
+    # input [w, l] tensor
+    mask_slice = np.zeros_like(label_slice)
+    if(np.sum(label_slice)!=0):
+        img_h, img_w = label_slice.shape
+        hs, ws =np.where(label_slice>0)
+        mask_hmin = np.clip(np.min(hs)-margin,0,img_h)
+        mask_hmax = np.clip(np.max(hs)+margin,0,img_h)
+        mask_wmin = np.clip(np.min(ws)-margin,0,img_w)
+        mask_wmax = np.clip(np.max(ws)+margin,0,img_w)
+        mask_slice[mask_hmin:mask_hmax+1, mask_wmin:mask_wmax+1]=1
+    mask_slice = mask_slice.astype(np.float32)
+    return mask_slice
+
 
 # bouding box operations
 def get_mask_bbx3D_param(label_cube,margin=4):
@@ -331,7 +350,7 @@ def get_mask_bbx3D_param(label_cube,margin=4):
     crop_info = CropInfo3D(**param_dict)
     return crop_info
 
-# bouding box operations
+# bounding box operations
 def get_crop_image_by_bbx_mask_array3D(image, bbx_mask, margin=0, ret_crop_info=True):
     # crop image based on the bounary of the binary mask
     # input [h,w,l] array
@@ -351,7 +370,7 @@ def get_crop_image_by_param_array3D(image, crop_info):
     min_h, max_h = crop_info.min_h, crop_info.max_h
     min_w, max_w = crop_info.min_w, crop_info.max_w
     min_l, max_l = crop_info.min_l, crop_info.max_l
-    crop_cube = label_cube[min_h:max_h+1, min_w:max_w+1, min_l:max_l+1]
+    crop_cube = image[min_h:max_h+1, min_w:max_w+1, min_l:max_l+1]
     return crop_cube
 
 def get_mask_bbx4D_array(bin_mask,pad_h=5,pad_w=5,pad_l=5):
@@ -423,7 +442,7 @@ def get_crop_and_pad_consist_shape(image_list,dst_shape,pad_value=0):
     return crop_h, crop_w, crop_l
 
 def fill_component_3Dlayer(image_cube,seg_cube,black_thresh=300/2300):
-    seg_value=np.max(seg_cube)
+    seg_value = np.max(seg_cube)
     h,w,l=seg_cube.shape
     if(type(image_cube)==np.ndarray):
         black_cube=np.where(image_cube<black_thresh,1,0)
@@ -431,7 +450,7 @@ def fill_component_3Dlayer(image_cube,seg_cube,black_thresh=300/2300):
         black_cube=np.zeros_like(seg_cube)
     process_cube=(seg_cube==0)
     fill_seg_cube=seg_cube.copy()
-    for slice_h in range(0,h):
+    for slice_h in range(0, h):
         seg_slice=process_cube[slice_h,:,:]
         largest_slice=keep_component_2D(seg_slice,keep_num=1)
         res_slice=seg_slice-largest_slice
@@ -737,27 +756,29 @@ def cal_dice_commonshape(pd_label, gt_label):
     dice=2*np.sum(intersec)/(np.sum(cal_gt_label)+np.sum(cal_pd_label))
     return dice
 
+# image reconstruction functions
 def cal_mse_array3D(image_a,
                     image_b,
-                    norm_value=4000/2500):
-    cur_image_a = image_a/norm_value
-    cur_image_b = image_b/norm_value
+                    norm_value=1,
+                    renorm_value=1):
+    cur_image_a = (image_a/norm_value)*renorm_value
+    cur_image_b = (image_b/norm_value)*renorm_value
     mse = np.mean((cur_image_a-cur_image_b)**2)
     return mse
 
 def cal_psnr_array3D(image_a,
                      image_b,
-                     norm_value=4000/2500,
+                     norm_value=1,
                      maxI=1.0):
     cur_image_a = image_a/norm_value
     cur_image_b = image_b/norm_value
     mse = np.mean((cur_image_a-cur_image_b)**2)
-    psnr = 10*np.log10(maxI**2/mse)
+    psnr = 10*np.log10((maxI**2)/mse)
     return psnr
     
 def cal_ssim_array3D(image_a,
                      image_b,
-                     norm_value=4000/2500,
+                     norm_value=1,
                      L=1.0,
                      k1=0.01,
                      k2=0.03):
@@ -775,76 +796,17 @@ def cal_ssim_array3D(image_a,
     ssim = ssim_nume/ssim_deno
     return ssim
 
-def cal_ncc_array3D(image_gt,
-                    image_pd):
-    class NCC:
-        """
-        Local (over window) normalized cross correlation loss.
-        """
+def cal_ncc_array3D(image_gt, image_pd):
+    mu_gt = np.mean(image_gt)
+    sigma_gt = np.std(image_gt)
+    mu_pd = np.mean(image_pd)
+    sigma_pd = np.std(image_pd)
+    n = image_gt.shape[0]*image_gt.shape[1]*image_gt.shape[2]
+    corr_image = ((image_gt-mu_gt)*(image_pd-mu_pd))/(sigma_gt*sigma_pd)
+    ncc = np.sum(corr_image)/n
+    return ncc
 
-        def __init__(self, win=None):
-            self.win = win
-
-        def loss(self, y_true, y_pred):
-
-            Ii = y_true
-            Ji = y_pred
-
-            # get dimension of volume
-            # assumes Ii, Ji are sized [batch_size, *vol_shape, nb_feats]
-            ndims = len(list(Ii.size())) - 2
-            assert ndims in [1, 2, 3], "volumes should be 1 to 3 dimensions. found: %d" % ndims
-
-            # set window size
-            win = [9] * ndims if self.win is None else self.win
-
-            # compute filters
-            sum_filt = torch.ones([1, 1, *win]).to(y_true.device)
-
-            pad_no = math.floor(win[0] / 2)
-
-            if ndims == 1:
-                stride = (1)
-                padding = (pad_no)
-            elif ndims == 2:
-                stride = (1, 1)
-                padding = (pad_no, pad_no)
-            else:
-                stride = (1, 1, 1)
-                padding = (pad_no, pad_no, pad_no)
-
-            # get convolution function
-            conv_fn = getattr(F, 'conv%dd' % ndims)
-
-            # compute CC squares
-            I2 = Ii * Ii
-            J2 = Ji * Ji
-            IJ = Ii * Ji
-
-            I_sum = conv_fn(Ii, sum_filt, stride=stride, padding=padding)
-            J_sum = conv_fn(Ji, sum_filt, stride=stride, padding=padding)
-            I2_sum = conv_fn(I2, sum_filt, stride=stride, padding=padding)
-            J2_sum = conv_fn(J2, sum_filt, stride=stride, padding=padding)
-            IJ_sum = conv_fn(IJ, sum_filt, stride=stride, padding=padding)
-
-            win_size = np.prod(win)
-            u_I = I_sum / win_size
-            u_J = J_sum / win_size
-
-            cross = IJ_sum - u_J * I_sum - u_I * J_sum + u_I * u_J * win_size
-            I_var = I2_sum - 2 * u_I * I_sum + u_I * u_I * win_size
-            J_var = J2_sum - 2 * u_J * J_sum + u_J * u_J * win_size
-
-            cc = cross * cross / (I_var * J_var + 1e-5)
-
-            return -torch.mean(cc)
-    ncc_func = NCC(win=None)
-    ncc_func_image_gt = torch.FloatTensor(image_gt)[np.newaxis, np.newaxis, :, :, :]
-    ncc_func_image_pd = torch.FloatTensor(image_pd)[np.newaxis, np.newaxis, :, :, :]
-    ret_ncc_func = ncc_func.loss(y_true=ncc_func_image_gt, y_pred=ncc_func_image_pd)
-    ncc = -(ret_ncc_func.item())
-    return ncc    
-
+# get label cube centroid functions 
 def get_centroid(cube, round=False):
     hs, ws, ls = np.where(cube>1e-2)
     mean_h = np.mean(hs)
@@ -855,6 +817,19 @@ def get_centroid(cube, round=False):
         mean_w = int(np.round(mean_w))
         mean_l = int(np.round(mean_l))
     return mean_h, mean_w, mean_l
+
+def get_centroid_array3D(cube, round=False):
+    return get_centroid(cube=cube, round=round)
+
+def get_centroid_array2D(cube, round=False):
+    hs, ws = np.where(cube>1e-2)
+    mean_h = np.mean(hs)
+    mean_w = np.mean(ws)
+    if(round):
+        mean_h = int(np.round(mean_h))
+        mean_w = int(np.round(mean_w))
+    return mean_h, mean_w
+
 
 def get_mincoor(cube, round=False):
     hs, ws, ls = np.where(cube>1e-2)
@@ -1057,7 +1032,6 @@ def possion_image_edit_array3d(src_image, dst_image, mask):
     # Does Poisson image editing on one channel given a source, target, and mask
     def process3d(source, target, mask):
         indicies = mask_indicies(mask)
-        print(f"test len(indices):{len(indicies)}")
         N = len(indicies)
         # Create poisson A matrix. Contains mostly 0's, some 4's and -1's
         A = poisson_sparse_matrix(indicies)
@@ -1166,12 +1140,9 @@ def possion_image_edit_by_condmask_array3d(src_image,
             for x in get_surrounding(index):
                 # If a surrounding point is in the mask, add -1 to index's
                 # row at correct position
-                # print(f"test poisson_psarse_matrix: type(x):{type(x)} type(points):{type(points)} x in points:{x in points}")
-                # print(f"test poisson_psarse_matrix: x:{x} points:{points}")
                 if x not in points: continue
                 j = points.index(x)
                 A[i,j] = -1
-                # print(f"test A.shape:{A.shape} A:{A}")
         return A
 
     # Main method
@@ -1199,9 +1170,7 @@ def possion_image_edit_by_condmask_array3d(src_image,
                             b[i] += target[pt]
 
         # Solve for x, unknown intensities
-        # print(f"test shape A:{A.shape}\nA:{A}")
         x = linalg.cg(A, b)
-        # print(f"test x.shape: {x[0].shape}\nx:{x}")
         # Copy target photo, make sure as int
         composite = np.copy(target)
         # Place new intensity on target at given index
@@ -1212,6 +1181,132 @@ def possion_image_edit_by_condmask_array3d(src_image,
     
     return process3d(source=src_image, target=dst_image, mask=mask, src_cond_mask=src_cond_mask, tgt_cond_mask=tgt_cond_mask)
 
+# mask contour and periphery functions
+def get_mask_contour_array3D(mask, border_width=1):
+    """
+    get the inner contour voxel of a binary mask,
+    mask: array [h,w,l], is of value {0,1} 
+    
+    notes: the inner contour voxels are inside the mask!
+    """
+    errode_mask = binary_erosion(mask, iterations=border_width).astype(np.float32)
+    contour = np.where(np.logical_and(mask>1e-1, errode_mask<1e-1), 1, 0).astype(np.float32)
+    return contour
+
+def get_mask_contour_array2D(mask, border_width=1):
+    return get_mask_periphery_array3D(mask=mask, border_width=border_width)
+
+def get_mask_periphery_array3D(mask, border_width=1):
+    """
+    get the outer periphery voxel of a binary mask.
+    mask: array [h,w,l], is of value {0,1} 
+    notes: the periphery voxels are outside the binary mask!
+    """
+    dilate_mask = binary_dilation(mask, iterations=border_width).astype(np.float32)
+    periphery = np.where(np.logical_and(dilate_mask>1e-1, mask<1e-1), 1, 0).astype(np.float32)
+    return periphery
+
+def get_mask_front_contour_array3D(mask, border_width=1):
+    h, w, l = mask.shape
+    mask_front_contour = np.zeros_like(mask)
+    for h_idx in range(0, h):
+        for l_idx in range(0, l):
+                w_slice = mask[h_idx, :, l_idx]
+                if(np.sum(w_slice)!=0):
+                    ws = np.where(w_slice>1e-1)[0]
+                    min_w = int(np.min(ws))
+                    mask_front_contour[h_idx, min_w, l_idx] = 1
+    return mask_front_contour
+
+
+def check_contour_intersect(base_mask, mask_b, border_width=1):
+    base_contour = get_mask_periphery_array3D(base_mask, border_width=border_width)
+    intersec = np.where(np.logical_and(base_contour>1e-1, mask_b>1e-1), 1, 0)
+    if(np.sum(intersec)>1e-1):
+        return True
+    else:
+        return False
+
+def get_union_mask(base_mask, add_mask):
+    union_mask = np.where(add_mask>1e-1, add_mask, base_mask)
+    return union_mask
+
+def get_dif_mask(base_mask, minus_mask):
+    dif_mask = np.where(minus_mask>1e-1, 0, base_mask)
+    return dif_mask
+
+# bounding box related function
+def get_bbx_boundry_array3D(bbx_mask):
+    """
+    get the boundry of the given bbx_mask
+
+    Args:
+        bbx_mask (array): shape [h,w,l], binary.
+    
+    Returns:
+        min_h (array): min_h.
+        max_h (array): max_h.
+        min_w (array): min_w.
+        max_w (array): max_w.
+        min_l (array): min_l.
+        max_l (array): max_l.
+    """
+    hs, ws, ls = np.where(bbx_mask>0)
+    # hs, ws, ls
+    min_h, max_h = np.min(hs),np.max(hs)
+    min_w, max_w = np.min(ws),np.max(ws)
+    min_l, max_l = np.min(ls),np.max(ls)
+    return min_h, max_h, min_w, max_w, min_l, max_l
+
+def get_bbx_boundry_dict_array3D(bbx_mask):
+    """
+    get the boundry of the given bbx_mask, ret in a dict format.
+    keys of the dict are `min_h`, `max_h`, `min_w`, `max_w`, `min_l`, `max_l`
+
+    Args:
+        bbx_mask (array): shape [h,w,l], binary.
+    
+    Returns:
+        boundry_dict
+    """
+    min_h, max_h, min_w, max_w, min_l, max_l = get_bbx_boundry_array3D(bbx_mask)
+    boundry_dict = {
+        "min_h" : min_h,
+        "max_h" : max_h,
+        "min_w" : min_w,
+        "max_w" : max_w,
+        "min_l" : min_l,
+        "max_l" : max_l
+    }
+    return boundry_dict
+
+
+def get_bbx_range_array3D(bbx_mask):
+    """
+    get the boundry of the given bbx_mask
+
+    Args:
+        bbx_mask (array): shape [h,w,l], binary.
+    
+    Returns:
+        range_h (array): range of bbx in h-dimension.
+        range_w (array): range of bbx in w-dimension.
+        range_l (array): range of bbx in l-dimension
+    """
+    min_h, max_h, min_w, max_w, min_l, max_l = get_bbx_boundry_array3D(bbx_mask=bbx_mask)
+    range_h = max_h - min_h + 1
+    range_w = max_w - min_w + 1
+    range_l = max_l - min_l + 1
+    return range_h, range_w, range_l
+
+def cvt_seg_value_array3D(seg, thresh_value=1e-1, cvt_value=1.0):
+    """
+    convert all values in seg that are greater than thresh_value into cvt_value 
+    """
+    cvt_seg = np.where(seg>thresh_value, cvt_value, 0.0).astype(np.float32)
+    return cvt_seg
+
+# crop image functions
 class CropInfo3D:
     def __init__(self,
                  min_h,
@@ -1245,112 +1340,13 @@ class CropInfo3D:
             image[self.min_h:self.max_h+1, self.min_w:self.max_w+1, self.min_l:self.max_l+1]
         return filter_image
 
-def get_mask_contour_array3D(mask, border_width=1):
-    """
-    get the inner contour voxel of a binary mask,
-    mask: array [h,w,l], is of value {0,1} 
-    
-    notes: the inner contour is inside the mask!
-    """
-    errode_mask = binary_erosion(mask, iterations=border_width).astype(np.float32)
-    contour = np.where(np.logical_and(mask>1e-1, errode_mask<1e-1), 1, 0).astype(np.float32)
-    return contour
-
-def get_mask_periphery_array3D(mask, border_width=1):
-    """
-    get the outer periphery voxel of a binary mask.
-    mask: array [h,w,l], is of value {0,1} 
-    notes: the periphery voxel must be outside the binary mask
-    """
-    dilate_mask = binary_dilation(mask, iterations=border_width).astype(np.float32)
-    periphery = np.where(np.logical_and(dilate_mask>1e-1, mask<1e-1), 1, 0).astype(np.float32)
-    return periphery
-
-def get_mask_front_contour_array3D(mask, border_width=1):
-    h, w, l = mask.shape
-    mask_front_contour = np.zeros_like(mask)
-    for h_idx in range(0, h):
-        for l_idx in range(0, l):
-                w_slice = mask[h_idx, :, l_idx]
-                if(np.sum(w_slice)!=0):
-                    ws = np.where(w_slice>1e-1)[0]
-                    min_w = int(np.min(ws))
-                    mask_front_contour[h_idx, min_w, l_idx] = 1
-    return mask_front_contour
-
-def exam_array(array, name="default"):
-    print(f"array {name}: shape:{array.shape} dtype:{array.dtype} max:{np.max(array)} min:{np.min(array)}")
-
-def check_contour_intersect(base_mask, mask_b, border_width=1):
-    base_contour = get_mask_periphery_array3D(base_mask, border_width=border_width)
-    intersec = np.where(np.logical_and(base_contour>1e-1, mask_b>1e-1), 1, 0)
-    if(np.sum(intersec)>1e-1):
-        return True
-    else:
-        return False
-
-def get_union_mask(base_mask, add_mask):
-    union_mask = np.where(add_mask>1e-1, add_mask, base_mask)
-    return union_mask
-
-def get_dif_mask(base_mask, minus_mask):
-    dif_mask = np.where(minus_mask>1e-1, 0, base_mask)
-    return dif_mask
-
-def get_bbx_boundry_array3D(bbx_mask):
-    """
-    get the boundry of the given bbx_mask
-
-    Args:
-        bbx_mask (array): shape [h,w,l], binary.
-    
-    Returns:
-        min_h (array): min_h.
-        max_h (array): max_h.
-        min_w (array): min_w.
-        max_w (array): max_w.
-        min_l (array): min_l.
-        max_l (array): max_l.
-    """
-    hs, ws, ls = np.where(bbx_mask>0)
-    # hs, ws, ls
-    min_h, max_h = np.min(hs),np.max(hs)
-    min_w, max_w = np.min(ws),np.max(ws)
-    min_l, max_l = np.min(ls),np.max(ls)
-    return min_h, max_h, min_w, max_w, min_l, max_l
-
-def get_bbx_range_array3D(bbx_mask):
-    """
-    get the boundry of the given bbx_mask
-
-    Args:
-        bbx_mask (array): shape [h,w,l], binary.
-    
-    Returns:
-        range_h (array): range of bbx in h-dimension.
-        range_w (array): range of bbx in w-dimension.
-        range_l (array): range of bbx in l-dimension
-    """
-    min_h, max_h, min_w, max_w, min_l, max_l = get_bbx_boundry_array3D(bbx_mask=bbx_mask)
-    range_h = max_h - min_h + 1
-    range_w = max_w - min_w + 1
-    range_l = max_l - min_l + 1
-    return range_h, range_w, range_l
-
-def cvt_seg_value_array3D(seg, thresh_value=1e-1, cvt_value=1.0):
-    """
-    convert all values in seg that are greater than thresh_value into cvt_value 
-    """
-    cvt_seg = np.where(seg>thresh_value, cvt_value, 0.0).astype(np.float32)
-    return cvt_seg
-
 def get_crop_image_array3D(image,
-                            start_h,
-                            start_w,
-                            start_l,
-                            crop_range_h,
-                            crop_range_w,
-                            crop_range_l):
+                           start_h,
+                           start_w,
+                           start_l,
+                           crop_range_h,
+                           crop_range_w,
+                           crop_range_l):
     start_h = round_int(start_h)
     start_w = round_int(start_w)
     start_l = round_int(start_l)
@@ -1359,3 +1355,458 @@ def get_crop_image_array3D(image,
     crop_range_l = round_int(crop_range_l)
     crop_image = copy.copy(image[start_h:start_h+crop_range_h, start_w:start_w+crop_range_w, start_l:start_l+crop_range_l])
     return crop_image
+
+def get_crop_image_array3D_dict(image_dict,
+                                start_h,
+                                start_w,
+                                start_l,
+                                crop_range_h,
+                                crop_range_w,
+                                crop_range_l):
+    crop_image_dict = {}
+    for image_key in image_dict.keys():
+        image = image_dict[image_key]
+        crop_image = get_crop_image_array3D(
+            image = image,
+            start_h = start_h,
+            start_w = start_w,
+            start_l = start_l,
+            crop_range_h = crop_range_h,
+            crop_range_w = crop_range_w,
+            crop_range_l = crop_range_l
+        )
+        crop_image_dict[image_key] = crop_image
+    return crop_image_dict
+
+def get_crop_image_array3D_list(image_list,
+                                start_h,
+                                start_w,
+                                start_l,
+                                crop_range_h,
+                                crop_range_w,
+                                crop_range_l):
+    crop_image_list = []
+    for image in image_list:
+        crop_image = get_crop_image_array3D(
+            image = image,
+            start_h = start_h,
+            start_w = start_w,
+            start_l = start_l,
+            crop_range_h = crop_range_h,
+            crop_range_w = crop_range_w,
+            crop_range_l = crop_range_l
+        )
+        crop_image_list.append(crop_image)
+    return crop_image_list
+
+def get_2D_image_crop_center_from_3D_binary_image(
+    binary_3D_mask,
+    slice_type
+):
+    """
+        给定二值掩码图像, 输出裁剪2D图像区域的范围
+    """
+    
+    center_h, center_w, center_l = get_centroid_array3D(binary_3D_mask)
+    crop_center_h = binary_3D_mask.shape[0] - center_h
+    crop_center_w = center_w
+    crop_center_l = binary_3D_mask.shape[2]//2
+    if(slice_type=="slice_h"):
+        return crop_center_w, crop_center_l
+    elif(slice_type=="slice_w"):
+        return  crop_center_h, crop_center_l
+    elif(slice_type=="slice_l"):
+        return crop_center_h, crop_center_w
+    else:
+        raise NotImplementedError(f"invalid slice_type: {slice_type}")
+
+# get slice 2D image from 3D cube functions
+def get_slice_h_image_from_cube_array3D(
+    cube,
+    slice_idx,
+    cvt_color_flag=False
+):
+    slice_h = cube[slice_idx, :, :]
+    if(cvt_color_flag):
+        slice_h = cvt_image_gray_to_color(slice_h)
+    return slice_h
+
+def get_slice_w_image_from_cube_array3D(
+    cube,
+    slice_idx,
+    cvt_color_flag=False
+):
+    slice_w = cube[:, slice_idx, :][::-1, :]
+    if(cvt_color_flag):
+        slice_w = cvt_image_gray_to_color(slice_w)
+    return slice_w
+
+def get_slice_l_image_from_cube_array3D(
+    cube,
+    slice_idx,
+    cvt_color_flag=False
+):
+    slice_l = cube[:, :, slice_idx][::-1, :]
+    if(cvt_color_flag):
+        slice_l = cvt_image_gray_to_color(slice_l)
+    return slice_l
+
+def get_slice_image_from_cube_array3D(
+    cube,
+    slice_idx,
+    slice_type,
+    cvt_color_flag=False
+):
+    """
+    available slice_type:
+        slice_h, slice_w, slice_l
+    """
+    gen_slice_func = None
+    if(slice_type == "slice_h"):
+        gen_slice_func = get_slice_h_image_from_cube_array3D
+    elif(slice_type == "slice_w"):
+        gen_slice_func = get_slice_w_image_from_cube_array3D
+    elif(slice_type == "slice_l"):
+        gen_slice_func = get_slice_l_image_from_cube_array3D
+    else:
+        raise NotImplementedError(f"Error Slice Type: {slice_type}")
+    slice_image = gen_slice_func(
+        cube = cube,
+        slice_idx = slice_idx,
+        cvt_color_flag = cvt_color_flag
+    )
+    return slice_image
+
+# array unsqueeze functions
+def unsqueeze_array4D_to_array3D(array4D):
+    return array4D[0]
+
+def unsqueeze_array4D_to_array3D_list(array4D_list):
+    array3D_list = [array4D[0] for array4D in array4D_list]
+    return array3D_list
+
+# embedding functions
+class Embed_Info:
+    def __init__(
+        self,
+        embed_idx=-1,
+        embed_coor=None,
+        class_label=None,
+        data_name=None
+    ):
+        self.embed_idx = embed_idx
+        self.embed_coor = embed_coor
+        self.class_label = class_label
+        self.data_name = data_name
+    
+    def to_dict(self):
+        embed_coor_list = list(self.embed_coor)
+        cvt_embed_coor_list = [float(single_coor) for single_coor in embed_coor_list]
+        ret_dict =  {
+            "embed_idx": self.embed_idx,
+            "embed_coor": cvt_embed_coor_list,
+            "class_label": self.class_label,
+            "data_name": self.data_name
+        }
+        return ret_dict
+    
+    def from_dict(self, load_dict):
+        self.embed_idx = load_dict["embed_idx"]
+        self.embed_coor = np.array(load_dict["embed_coor"])
+        self.class_label = load_dict["class_label"]
+        self.data_name = load_dict["data_name"]
+        return True        
+    
+    def set_embed_coor(self, embed_coor):
+        self.embed_coor = embed_coor
+    
+    def get_embed_coor(self):
+        return self.embed_coor
+    
+    def set_class_label(self, class_label):
+        self.class_label = class_label
+    
+    def get_class_label(self):
+        return self.class_label
+
+    def set_data_name(self, data_name):
+        self.data_name = data_name
+    
+    def get_data_name(self):
+        return self.data_name
+    
+    def get_info_str(self):
+        info_str = f"embed_idx: {self.embed_idx}\t data_name:{self.data_name}\t class_label: {self.class_label}\t embed_coor: {self.embed_coor}"
+        return info_str
+
+class Embed_Manager:
+    def __init__(self,
+                 save_dir,
+                 default_color="#2f2c30"):
+        self._embed_type = "TSNE_embed"
+        self._embed_func = Tsne_embed
+        self.save_dir = save_dir 
+        self.default_color = default_color
+        make_dir(self.save_dir)
+        # embed attrs
+        self.data_num = -1
+        self.embed_raw_data = None
+        self.embed_raw_label = None
+        self.embed_matrix = None
+        self.embed_info_dict = {}
+        self.label_color_dict = {}
+        # save attrs
+        self.save_embed_info_dict_path = f"{self.save_dir}/embed_info_dict.json"
+        self.save_embed_matrix_path = f"{self.save_dir}/embed_matrix.txt"
+        self.save_label_color_dict_path = f"{self.save_dir}/label_color_dict.json"
+    
+    def set_label_color_dict(self, label_color_dict):
+        self.label_color_dict = label_color_dict
+    
+    def get_embed_coor(self, embed_idx):
+        return self.embed_info_dict[embed_idx].get_embed_coor()
+    
+    def get_embed_idx_by_data_name(self, input_data_name):
+        data_name_dict = {}
+        for embed_idx in self.embed_info_dict.keys():
+            embed_info = self.embed_info_dict[embed_idx]
+            data_name = embed_info.get_data_name()
+            if(data_name in data_name_dict):
+                raise NotImplementedError(f"Repeate Data Name, Error! data_name:{data_name}")
+            else:
+                data_name_dict[data_name] = embed_idx
+        return data_name_dict[input_data_name]
+    
+    def get_label_color(self, label):
+        if(self.label_color_dict is None):
+            return None
+        else:
+            return self.label_color_dict[label]
+    
+    def get_label_list_by_embed_info_dict(self, temp_embed_info_dict):
+        cur_label_list = []
+        for embed_idx in range(0, self.embed_num):
+            embed_info = temp_embed_info_dict[embed_idx]
+            embed_class_label = embed_info.get_class_label()
+            if(embed_class_label is not None):
+                cur_label_list.append(embed_class_label)
+        return cur_label_list
+    
+    def get_cur_label_list(self):
+        return self.get_label_list_by_embed_info_dict(self.embed_info_dict)
+    
+    def get_class_embed_list_by_embed_info_dict(self, temp_embed_info_dict, label):
+        class_embed_idx_list = []
+        class_embed_x_list = []
+        class_embed_y_list = []
+        for embed_idx in range(0, self.embed_num):
+            embed_info = temp_embed_info_dict[embed_idx]
+            if(embed_info.get_class_label() == label):
+                class_embed_idx_list.append(embed_idx)
+                embed_coor = self.embed_matrix[embed_idx, :]
+                class_embed_x_list.append(embed_coor[0])
+                class_embed_y_list.append(embed_coor[1])
+        return class_embed_idx_list, class_embed_x_list, class_embed_y_list
+    
+    def get_cur_class_embed_list(self, label):
+        return self.get_class_embed_list_by_embed_info_dict(
+            temp_embed_info_dict=self.embed_info_dict,
+            label=label
+        )
+    
+    def set_embed_raw(
+        self,
+        embed_raw_data,
+        embed_raw_label=None,
+        embed_raw_name=None,
+        label_color_dict=None
+    ):
+        self.embed_raw_data = embed_raw_data
+        self.embed_raw_label = embed_raw_label
+        self.embed_raw_name = embed_raw_name
+        self.label_color_dict = label_color_dict
+        self.embed_num = self.embed_raw_data.shape[0]
+        
+        for embed_idx in range(0, self.embed_num):
+            self.embed_info_dict[embed_idx] = Embed_Info(
+                    embed_idx = embed_idx
+            )
+            if(self.embed_raw_label is not None):
+                self.embed_info_dict[embed_idx].set_class_label(self.embed_raw_label[embed_idx])
+            if(self.embed_raw_name is not None):
+                self.embed_info_dict[embed_idx].set_data_name(self.embed_raw_name[embed_idx])
+        return True
+    
+    def exec_embedding(self, embed_dim=2):
+        """
+        embed_raw_data:
+            array2D, [n, k], n is the number of data, k is the dim of feature
+        embed_raw_label:
+            array3D, [n], n is the number of data
+        """
+        # print(f"test self.embed_raw_data: type:{type(self.embed_raw_data)} shape:{self.embed_raw_data.shape}")
+        self.embed_matrix = self._embed_func(x=self.embed_raw_data,
+                                             embed_dim=embed_dim)
+        
+        for embed_idx in range(0, self.embed_num):
+            # embed coor
+            self.embed_info_dict[embed_idx].set_embed_coor(self.embed_matrix[embed_idx])
+    
+    
+    def plot_embedding(
+        self,
+        plot_path,
+        plot_chosen_label_dict=None,
+        title="",
+        print_info_flag=False
+    ):
+        """
+        structure of chosen_label_dict
+            key: embed_idx
+            value: label
+        """
+        plot_embed_x = copy.deepcopy(self.embed_matrix)
+        plot_embed_info_dict = copy.deepcopy(self.embed_info_dict)
+        
+        # set labels of chosen_data
+        if(plot_chosen_label_dict is not None):
+            for chosen_idx in plot_chosen_label_dict.keys():
+                chosen_label = plot_chosen_label_dict[chosen_idx]
+                plot_embed_info_dict[chosen_idx].set_class_label(chosen_label)
+                # print(f"test set chosen_idx:{chosen_idx} chosen_label:{chosen_label}")
+        
+        if(print_info_flag):
+            self.exam_label_dist(temp_embed_info_dict=plot_embed_info_dict)
+            self.exam_label_color_dict()
+        
+        fig, ax = plt.subplots()
+        cord_min = np.min(plot_embed_x,axis=0)
+        cord_max = np.max(plot_embed_x,axis=0)
+        plot_embed_x = (plot_embed_x-cord_min)/(cord_max-cord_min)*1.4
+        plot_label_list = np.unique(self.get_label_list_by_embed_info_dict(temp_embed_info_dict=plot_embed_info_dict))
+        plot_label_list = plot_label_list[::-1]
+        
+        s_legend_list = []
+        name_legend_list = []
+        for label in plot_label_list:
+            class_embed_idx_list, class_embed_x_list, class_embed_y_list = \
+                self.get_class_embed_list_by_embed_info_dict(temp_embed_info_dict=plot_embed_info_dict, label=label)
+            class_idx = np.array(class_embed_idx_list)
+            class_embed_x = np.array(class_embed_x_list)
+            class_embed_y = np.array(class_embed_y_list)
+            class_color = self.get_label_color(label)
+            class_name = label
+            class_s = ax.scatter(x=class_embed_x, y=class_embed_y, c=class_color)
+            s_legend_list.append(class_s)
+            name_legend_list.append(class_name)
+        plt.legend(s_legend_list, name_legend_list, loc="best")
+        plt.title(title)
+        make_parent_dir(plot_path)
+        plt.savefig(plot_path)
+        plt.close()
+    
+    def save_status(self):
+        # embed_info_dict
+        print("Embed Manager Save embed_info_dict")
+        save_embed_info_dict = {}
+        for embed_idx in list(self.embed_info_dict.keys()):
+            save_embed_info_dict[embed_idx] = self.embed_info_dict[embed_idx].to_dict()
+            # print(f"test save_embed_info_dict[embed_idx]: {save_embed_info_dict[embed_idx]} type(embed_coor):{type(embed_coor)} {type(embed_coor[0])} {type(1.2124)} {type(float(embed_coor[1]))}")
+        common_json_dump(save_embed_info_dict, self.save_embed_info_dict_path)
+        # embed matrix
+        print("Embed Manager Save embed_matrix")
+        common_array_dump(self.embed_matrix, self.save_embed_matrix_path)
+        # label color dict
+        print("Embed Manager Save color_dict")
+        if(self.label_color_dict is not None):
+            common_json_dump(self.label_color_dict, self.save_label_color_dict_path)
+        return True
+    
+    def load_status(self):
+        print("[Loading Embeding Status]")
+        # embed info dict
+        print("\t Loading Embed Info Dict")
+        if(os.path.exists(self.save_embed_info_dict_path)):
+            save_embed_info_dict = common_json_load(self.save_embed_info_dict_path)
+            for embed_idx in list(save_embed_info_dict.keys()):
+                self.embed_info_dict[int(embed_idx)] = Embed_Info(embed_idx=embed_idx)
+                self.embed_info_dict[int(embed_idx)].from_dict(save_embed_info_dict[embed_idx])
+            self.embed_num = len(self.embed_info_dict.keys())
+            print("\t\t Embed Info Dict Load Success")
+        else:
+            print("\t\t Embed Info Dict Path not exists! Load Error, Ignore.")
+        # embed matrix
+        print("\t Loading Embed Matrix")
+        if(os.path.exists(self.save_embed_matrix_path)):
+            self.embed_matrix = common_array_load(self.save_embed_matrix_path)
+            print("\t\t Embed Matrix Load Success")
+        else:
+            print("\t\t Embed Matrix Path not exists! Load Error, Ignore.")
+        # label color dict
+        print("\t Loading Label Color Dict")
+        if(os.path.exists(self.save_label_color_dict_path)):
+            self.label_color_dict = common_json_load(self.save_label_color_dict_path)
+            print("\t\t Label Color Dict Load Success")
+        else:
+            print("\t\t Label Color Dict Path not exists! Load Error, Ignore.")
+    
+    def exam_label_dist(self, temp_embed_info_dict):
+        label_list = self.get_label_list_by_embed_info_dict(temp_embed_info_dict=temp_embed_info_dict)
+        dist_label_dict = dict(Counter(label_list))
+        for label in dist_label_dict.keys():
+            print(f"\t\t label: {label} count: {dist_label_dict[label]}")
+    
+    def exam_label_color_dict(self):
+        if(self.label_color_dict is None):
+            print("Error! label_color_dict is None")
+        else:
+            for label in self.label_color_dict.keys():
+                print(f"\t\t label: {label} color: {self.label_color_dict[label]}")
+    
+    def exam_status(self, print_details_flag=False):
+        print("[Exam Status]")
+        # check correspondence between embed_matrix and embed_info_dict
+        correspond_flag = True
+        if(len(self.embed_info_dict.keys())!=self.embed_matrix.shape[0]):
+            correspond_flag = False
+        for embed_idx in self.embed_info_dict.keys():
+            embed_info = self.embed_info_dict[embed_idx]
+            embed_info_coor = embed_info.get_embed_coor()
+            embed_matrix_coor = self.embed_matrix[embed_idx, :]
+            if(np.sum(embed_info_coor!=embed_matrix_coor)>0):
+                correspond_flag = False
+        print(f"\t Exam Correspond: {correspond_flag}")
+        
+        # check embed_num
+        print(f"\t Embed Num: {self.embed_num}")
+        
+        # check label dist
+        print("\t Check Label Dist:")
+        self.exam_label_dist(temp_embed_info_dict=self.embed_info_dict)
+        
+        # check color dict
+        print("\t Check Color Dict")
+        self.exam_label_color_dict()
+            
+        # check details
+        if(print_details_flag):
+            print("\t Exam Details Info")
+            for embed_idx in self.embed_info_dict.keys():
+                embed_info = self.embed_info_dict[embed_idx]
+                print(f"\t\t embed_idx:{embed_idx}\t {embed_info.get_info_str()}")
+        return True
+
+def get_circle_seg_array3D(
+    shape,
+    center_array,
+    radius
+):
+    """
+    center_array [3], 1-dimension array with length equals 3.
+    """
+    shape_h, shape_w, shape_l = shape
+    mesh_grid = np.stack(np.mgrid[0:shape_h:1, 0:shape_w:1, 0:shape_l:1])
+    dist = (mesh_grid - center_array[:, np.newaxis, np.newaxis, np.newaxis])
+    dist = np.sqrt(np.sum(dist**2, axis=0))
+    circle_seg = np.where(dist<radius, 1, 0).astype(np.float32)
+    return circle_seg

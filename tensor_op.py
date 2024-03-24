@@ -16,7 +16,6 @@ def totensor(array_list):
         ret_tensor = tensor_list
     else:
         raise NotImplementedError(f"ToTensor Func not implemented type:{type(ret_tensor)}")
-    # print(f"test totensor array_list:{type(array_list)} ret_tensor:{type(ret_tensor)}")
     return ret_tensor
 
 def tonumpy(tensor_list):
@@ -221,6 +220,16 @@ def get_grid_tensor(shape):
     grid = grid.float()
     return grid
 
+def get_grid_array(shape):
+    '''
+    Parameters:
+        shape: shape [3], (h,w,l) of image thats need grid
+    Returns:
+        grid: shape [dim,h,w,l], dim=3
+    '''
+    return get_grid_tensor(shape).cpu().numpy()
+
+
 @functools.lru_cache(maxsize=8)
 def get_grid_tensor_by_param(h, w, l):
     return get_grid_tensor(shape=[h, w, l])    
@@ -247,7 +256,7 @@ def get_inv_rigid_matrix(init_rigid_matrix):
     inv_rigid_matrix[:3, 3] = -(rotate_matrix.transpose(0,1))@trans_vec
     inv_rigid_matrix[3, 3] = 1
     return inv_rigid_matrix
-    
+
 def check_cvt_tensor_scalar(x):
     if(not is_tensor(x)):
         return to_tensor_scalar(x)
@@ -268,8 +277,7 @@ def get_rigid_matrix_from_param(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=
     '''
     # input trans_x,trans_y,trans_z,roll,pitch,yaw
     # output rigid matrix of shape [4,4]
-    # print(f"test type: trans_x:{type(trans_x)} trans_y:{type(trans_y)} trans_z:{type(trans_z)} roll:{type(roll)} pitch:{type(pitch)} yaw:{type(yaw)}")
-    
+
     if(not is_tensor(trans_x)):
         trans_x = to_tensor_scalar(trans_x)
 
@@ -290,7 +298,7 @@ def get_rigid_matrix_from_param(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=
 
     from torch import cos,sin
     device = trans_x.device
-    torch.FloatTensor()
+
     # center
     Rc = torch.zeros(size=[4,4]).to(device)
     Rc[0,0] = 1
@@ -440,7 +448,6 @@ def get_inv_rigid_matrix_from_param(trans_x,trans_y,trans_z,roll,pitch,yaw,cente
     # total
     R = Rt@Rdc@Rr@Rc
     inv_R = Rc@inv_Rr@Rdc@(-Rt)
-    print(f"test R@inv_R:{R@inv_R}")
     return inv_R
 
 def get_rigid_matrix_from_param_ZYX(trans_x,trans_y,trans_z,roll,pitch,yaw,center_x=63.5,center_y=63.5,center_z=63.5):
@@ -637,6 +644,7 @@ def get_points_from_seg(seg):
     points_ls = grid_ls[select_seg]
     points = torch.stack([points_hs, points_ws, points_ls]).transpose(0,1)
     return points
+
 
 def spatial_transform_by_param_tensor4D(image,
                                        trans_x=0,
@@ -866,6 +874,18 @@ def center_align_by_seg_tensor4D_batch(
         "output_image" : output_image_batch
     }
     return align_dict
+
+def cal_ahd_init_version(pd_label, gt_label):
+    """
+    注意： 此函数由于只考虑单向forward的ahd, 不合理, 已被遗弃, 为legacy
+    """
+    pd_pts = torch.transpose(torch.stack(torch.where(torch.FloatTensor(pd_label>0))),1,0)
+    gt_pts = torch.transpose(torch.stack(torch.where(torch.FloatTensor(gt_label>0))),1,0)
+    dist_matrix = torch.sqrt(torch.sum((pd_pts[:,np.newaxis,:] - gt_pts[np.newaxis,:,:])**2, dim=2))
+    dist_min = torch.min(dist_matrix, dim=1).values
+    ahd = torch.mean(dist_min).cpu().item()
+    return ahd
+
 
 def cal_ahd_forward_general3D(
     seg_src,

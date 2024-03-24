@@ -1,3 +1,6 @@
+"""
+本脚本包含的是配准有关的函数, 包括图像image配准, triangle mesh配准和点云配准, 刚性配准和非刚性配准等, 即为 registration functions
+"""
 from .dependencies import *
 from .common import *
 from .image_op import *
@@ -379,7 +382,7 @@ def plastimatch_regis_bspline(fix_image_path,
     make_parent_dir(output_trans_path)
     # demon registration    
     regis_file=open(cmd_file_path,mode="w")
-    
+
     # global
     regis_file.write("[GLOBAL]\n")
     regis_file.write(f"fixed={fix_image_path}\n")
@@ -390,7 +393,6 @@ def plastimatch_regis_bspline(fix_image_path,
         regis_file.write(f"moving_mask={mov_mask_path}\n")
     regis_file.write(f"img_out={output_image_path}\n")
     regis_file.write(f"xform_out={output_trans_path}\n")
-    regis_file.write(f"img_out={output_image_path}\n")
     regis_file.write("\n")
     # stage
     regis_file.write("[STAGE]\n")
@@ -564,8 +566,6 @@ def ants_regis_syn(fix_image_path,
                     mov_image_path,
                     output_image_path,
                     fix_mask_path=None,
-                    mov_mask_path=None,
-                    output_seg_path=None,
                     output_trans_path=None,
                     default_value=0,
                     max_its=(40, 20, 0),
@@ -577,7 +577,12 @@ def ants_regis_syn(fix_image_path,
                     clean_mat_file=True
                     ):
     """
-        notes: type_of_transform possible value: SyNOnly, SyN, SyNRA
+        notes: type_of_transform possible value: SyNOnly, SyN, SyNRA.
+        
+        fix_mask_path is passed to ANts function,
+        mov_mask_path is not used.
+        
+        output_trans file format is .mat
     """
     import ants
     ants_interpolation_method_dict = {
@@ -599,9 +604,8 @@ def ants_regis_syn(fix_image_path,
                                       reg_iterations=max_its,
                                       type_of_transform=type_of_transform)
     fwd_trans = ret_trans["fwdtransforms"]
-    print(f"test ret_trans:{ret_trans}")
     # notes
-    # SyNRA return fwd_trans is a list with two element, is geenral deform-field and an affine param
+    # SyNRA return fwd_trans is a list with two element, is general deform-field and an affine param
     if(output_trans_path is not None):
         shutil.copy(fwd_trans[0], output_trans_path)
     # print(f"test ants syn fwd_trans.shape:{len(fwd_trans)} {fwd_trans[0].shape}")
@@ -621,10 +625,86 @@ def ants_regis_syn(fix_image_path,
         ants.image_write(transfer_output_image, transfer_output_image_path)
 
     # clean mat file
-    # clean mat file
     if(clean_mat_file):
         for trans_name in ["fwdtransforms", "invtransforms"]:
             trans_file_path_list = ret_trans[trans_name]
+            for trans_file_path in trans_file_path_list:
+                if(os.path.exists(trans_file_path)):
+                    os.remove(trans_file_path)
+
+
+def ants_regis_syn_invbkd(fix_image_path, 
+                    mov_image_path,
+                    output_image_path,
+                    mov_mask_path=None,
+                    output_trans_path=None,
+                    default_value=0,
+                    max_its=(40, 20, 0),
+                    transfer_input_image_paths=[],
+                    transfer_output_image_paths=[],
+                    transfer_interpolation_methods=[],
+                    type_of_transform="SyNRA",
+                    temp_dir="./",
+                    clean_mat_file=True
+                    ):
+    """
+        注: 相比起ants_regis_syn, ants_regis_syninv的主要区别在于是通过反向配准的逆, 来取代原配准, 这样就能够使用mov_mask
+        ants的registration只能够输入fix_mask, 不能够输入mov_mask, 这导致在将裂隙图像配准到模板图像时, 其不能使用mask从而导致
+        裂隙被压缩以使得裂隙周围的骨组织和模板图像对齐, 考虑syn配准的可逆性, 采用逆向配准再取逆的形式从而能够变相地使用mov_mask
+    
+    
+        notes: type_of_transform possible value: SyNOnly, SyN, SyNRA.
+        
+        fix_mask_path is passed to ANts function,
+        mov_mask_path is not used.
+        
+        output_trans file format is .mat
+    """
+    import ants
+    ants_interpolation_method_dict = {
+        "linear" : "linear",
+        "nn" : "nearestNeighbor"
+    }
+    fix_image = ants.image_read(fix_image_path)
+    mov_image = ants.image_read(mov_image_path)
+    if(mov_mask_path is None):
+        bkd_ret_trans = ants.registration(fixed=mov_image,
+                                      moving=fix_image,
+                                      reg_iterations=max_its,
+                                      type_of_transform=type_of_transform)
+    else:
+        mov_mask = ants.image_read(mov_mask_path)
+        bkd_ret_trans = ants.registration(fixed=mov_image,
+                                      moving=fix_image,
+                                      mask=mov_mask,
+                                      reg_iterations=max_its,
+                                      type_of_transform=type_of_transform)
+    inv_bkd_trans = bkd_ret_trans["invtransforms"]
+    print(f"test ret_trans:{bkd_ret_trans}")
+    # notes
+    # SyNRA return fwd_trans is a list with two element, is general deform-field and an affine param
+    if(output_trans_path is not None):
+        shutil.copy(inv_bkd_trans[0], output_trans_path)
+    # print(f"test ants syn fwd_trans.shape:{len(fwd_trans)} {fwd_trans[0].shape}")
+    # image
+    output_image = ants.apply_transforms(fixed=fix_image, moving=mov_image, transformlist=inv_bkd_trans)
+    ants.image_write(output_image, output_image_path)
+    for transfer_idx in range(0, len(transfer_input_image_paths)):
+        transfer_input_image_path = transfer_input_image_paths[transfer_idx]
+        transfer_output_image_path = transfer_output_image_paths[transfer_idx]
+        transfer_interpolation_method = transfer_interpolation_methods[transfer_idx]
+        transfer_interpolation_method = ants_interpolation_method_dict[transfer_interpolation_method]
+        transfer_input_image = ants.image_read(transfer_input_image_path)
+        transfer_output_image = ants.apply_transforms(fixed=fix_image,
+                                                      moving=transfer_input_image,
+                                                      transformlist=inv_bkd_trans,
+                                                      interpolator=transfer_interpolation_method)
+        ants.image_write(transfer_output_image, transfer_output_image_path)
+
+    # clean mat file
+    if(clean_mat_file):
+        for trans_name in ["fwdtransforms", "invtransforms"]:
+            trans_file_path_list = bkd_ret_trans[trans_name]
             for trans_file_path in trans_file_path_list:
                 if(os.path.exists(trans_file_path)):
                     os.remove(trans_file_path)
@@ -749,7 +829,8 @@ def ants_regis_rigid(fix_image_path,
             for trans_file_path in trans_file_path_list:
                 if(os.path.exists(trans_file_path)):
                     os.remove(trans_file_path)
-                    
+
+
 def ants_regis_affine(fix_image_path, 
                     mov_image_path,
                     output_image_path,
@@ -885,7 +966,7 @@ def ants_invert_trans(
         read_invert_trans = ants.read_transform(inverse_trans_path)
         print(f"input_trans:\n{input_trans.parameters}")
         print(f"invert_trans:\n{read_invert_trans.parameters}")
-        
+
 
 def ants_apply_trans(
                     input_image_path,
@@ -900,7 +981,7 @@ def ants_apply_trans(
         input_image_path (str): path of input image.
         input_trans_path (str): path of input trans.
         output_image_path (str): path of output image.
-        interpolation_type (str, optional): interpolation type. Defaults to "nn".
+        interpolation_type (str, optional): interpolation type. Defaults to "nn". available value-"linear", "nn"
     """
     import ants
     ants_interpolation_method_dict = {
@@ -946,7 +1027,7 @@ def ants_apply_trans_list(
             interpolation_type=interpolation_type_list[warp_idx]
         )
     return True
-    
+
 
 def center_align_by_center(
     center_h,
@@ -1135,5 +1216,61 @@ def center_align_list_by_seg(
         "trans_z" : trans_l
     }
     return align_dict
+
+def read_itk_transform(
+    itk_transform_path
+):
+    return itk.ReadTransform(itk_transform_path)
+
+def itk_warp_func(
+    cube,
+    itk_transform,
+    interpolate_method="linear",
+    defaultPixelValue = 0
+):
+    """
+        available mode: linear, nn
+    """
+    process_itk_transform = copy.copy(itk_transform)
+    itk_interpolate_method_dict = {
+        "linear" : itk.sitkLinear,
+        "nn" : itk.sitkNearestNeighbor
+    }
+    image = itk.GetImageFromArray(cube)
+    trans_image = itk.Resample(
+    image1 = image,
+    transform = process_itk_transform,
+    interpolator = itk_interpolate_method_dict[interpolate_method],
+    defaultPixelValue = defaultPixelValue
+    )
+    trans_cube = itk.GetArrayFromImage(trans_image)
+    return trans_cube
+
+def itk_warp_func_path(
+    input_image_path,
+    itk_transform_path,
+    output_image_path,
+    interpolate_method="linear",
+    defaultPixelValue = 0
+):
+    """
+        available mode: linear, nn
+    """
+    itk_transform = read_itk_transform(itk_transform_path)
+    cube = read_mha_array3D(input_image_path)
     
-    
+    process_itk_transform = copy.copy(itk_transform)
+    itk_interpolate_method_dict = {
+        "linear" : itk.sitkLinear,
+        "nn" : itk.sitkNearestNeighbor
+    }
+    image = itk.GetImageFromArray(cube)
+    trans_image = itk.Resample(
+    image1 = image,
+    transform = process_itk_transform,
+    interpolator = itk_interpolate_method_dict[interpolate_method],
+    defaultPixelValue = defaultPixelValue
+    )
+    trans_cube = itk.GetArrayFromImage(trans_image)
+    write_mha_array3D(trans_cube, output_image_path)
+    return trans_cube
